@@ -12,6 +12,30 @@
 //
 // You should have received a copy of the GNU General Public License along with Foobar.
 // If not, see <https://www.gnu.org/licenses/>.
-pub mod someip;
-pub mod util;
-pub mod endpoint;
+
+use someiprs::endpoint;
+
+#[tokio::main]
+async fn main() {
+    let token = tokio_util::sync::CancellationToken::new();
+    let mut task_handles : Vec<tokio::task::JoinHandle<()>> = vec![];
+    let addrs = tokio::net::lookup_host("127.0.0.1:8089").await
+        .expect("Cannot resolve address");
+    for addr in addrs {
+        println!("Create UDP tasks for {:?}", addr);
+        task_handles.push(
+            tokio::spawn(
+                endpoint::start_udp_endpoint(addr, token.clone())
+            )
+        );
+    }
+    println!("{} tasks started.", task_handles.len());
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+    }
+    token.cancel();
+    for handle in task_handles.into_iter() {
+        let _ = handle.await;
+    }
+}

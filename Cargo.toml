@@ -9,6 +9,10 @@ edition = "2021"
 name = "someiprs"
 path = "src/lib/lib.rs"
 
+[[example]]
+name = "recv-udp"
+path = "examples/recv_udp/main.rs"
+
 [dependencies]
 bytes = { version = "1" }
 tokio = { version = "1", features = ["full"]}
