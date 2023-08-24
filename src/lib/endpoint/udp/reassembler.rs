@@ -14,6 +14,7 @@
 // If not, see <https://www.gnu.org/licenses/>.
 
 use std::net::SocketAddr;
+use std::os::unix::raw::mode_t;
 use bytes::{Bytes};
 use crate::endpoint::someip;
 use crate::endpoint::types;
@@ -117,11 +118,16 @@ impl Reassembler {
             return Err(types::Error::UdpSegmentationHoleDetected(msg.header));
         }
 
-        // extend payload buffer if necessary to hold the new segment and then copy
+        // extend payload buffer if necessary to hold the new segment and then copy and update next_offset
         if end > self.payload.len() {
             self.payload.resize(end, 0);
         }
         self.payload.as_mut_slice()[start..end].copy_from_slice(msg.payload.as_ref());
+        if self.mode == ReassemblyMode::Up {
+            self.next_offset = end;
+        } else {
+            self.next_offset = start;
+        }
 
         // reset timeout = ttl
         self.ttl = self.init_ttl;
@@ -166,5 +172,173 @@ impl Reassembler {
             self.mode = ReassemblyMode::Up;
             self.next_offset = 0;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::BytesMut;
+    use super::*;
+
+    fn make_default_header() -> someip::Header {
+        someip::Header{
+            message_id: someip::MessageId::from(0x01020304),
+            length: 0,
+            request_id: someip::RequestId::from(0xc1c28080),
+            proto_version: someip::ProtocolVersion::Version1,
+            intf_version: someip::InterfaceVersion::from(1),
+            msg_type: someip::MessageType::TpRequestNoReturn,
+            ret_code: someip::ReturnCode::Ok,
+            tp_header: Some( someip::TpHeader{ offset: 0, more: false} ),
+        }
+    }
+
+    fn make_message(len: usize, offset: u32, more: bool, value: u8) -> someip::Message {
+        let mut hdr = make_default_header();
+        hdr.tp_header.as_mut().unwrap().more = more;
+        hdr.tp_header.as_mut().unwrap().offset = offset;
+        hdr.length  = hdr.calc_length(len);
+        let mut data = BytesMut::zeroed(len);
+        data.fill(value);
+        someip::Message{ header: hdr, payload: data.freeze()}
+    }
+
+    #[test]
+    fn reassemble_tick_resurrected() {
+        let msg1 = make_message(64,0, true, 0xa1);
+        let msg2 = make_message(32, 4, true, 0xb0);
+        let msg3 = make_message(128, 6, true, 0xcf);
+
+        let mut ra = Reassembler::new(1024, 4096, 5, &msg1.header);
+        assert!( ra.process_segment(msg1).is_ok() );
+        assert!( ra.process_segment(msg2).is_ok() );
+
+        assert!(!ra.tick());
+        assert!(!ra.tick());
+        assert!(!ra.tick());
+        assert!(!ra.tick());
+        assert!(!ra.tick());
+        assert!( ra.process_segment(msg3).is_ok() );
+        assert!(!ra.tick());
+        assert!(ra.finish().is_ok());
+    }
+
+    #[test]
+    fn reassemble_tick_death() {
+        let msg1 = make_message(64,0, true, 0xa1);
+        let msg2 = make_message(32, 4, true, 0xb0);
+        let msg3 = make_message(128, 7, true, 0xcf);
+
+        let mut ra = Reassembler::new(1024, 4096, 5, &msg1.header);
+        assert!( ra.process_segment(msg1).is_ok() );
+        assert!( ra.process_segment(msg2).is_ok() );
+
+        assert!(!ra.tick());
+        assert!(!ra.tick());
+        assert!(!ra.tick());
+        assert!(!ra.tick());
+        assert!(!ra.tick());
+        assert!(ra.tick());
+        assert!(ra.tick());
+    }
+
+    #[test]
+    fn reassemble_hole_detected() {
+        let msg1 = make_message(64,0, true, 0xa1);
+        let msg2 = make_message(32, 4, true, 0xb0);
+        let msg3 = make_message(128, 7, true, 0xcf);
+
+        let mut ra = Reassembler::new(1024, 4096, 5, &msg1.header);
+        assert!( ra.process_segment(msg1).is_ok() );
+        assert!( ra.process_segment(msg2).is_ok() );
+
+        if let Err(types::Error::UdpSegmentationHoleDetected(header)) = ra.process_segment(msg3) {
+            assert_eq!(header.message_id, someip::MessageId::from(0x01020304));
+            assert_eq!(header.request_id, someip::RequestId::from(0xc1c28080));
+            assert_eq!(header.proto_version, someip::ProtocolVersion::Version1);
+            assert_eq!(header.intf_version, someip::InterfaceVersion::from(1));
+            assert_eq!(header.msg_type, someip::MessageType::TpRequestNoReturn);
+        }
+        else {
+            panic!("no error returned from message 3.")
+        }
+    }
+
+    #[test]
+    fn reassemble_exceeding_max_size() {
+        let msg1 = make_message(64,0, true, 0xa1);
+        let msg2 = make_message(32, 4, true, 0xb0);
+        let msg3 = make_message(128, 6, false, 0xcf);
+
+        let mut ra = Reassembler::new(128, 190, 5, &msg1.header);
+        assert!( ra.process_segment(msg1).is_ok() );
+        assert!( ra.process_segment(msg2).is_ok() );
+
+        if let Err(types::Error::MaxPayloadSizeExceeded(header)) = ra.process_segment(msg3) {
+            assert_eq!(header.message_id, someip::MessageId::from(0x01020304));
+            assert_eq!(header.request_id, someip::RequestId::from(0xc1c28080));
+            assert_eq!(header.proto_version, someip::ProtocolVersion::Version1);
+            assert_eq!(header.intf_version, someip::InterfaceVersion::from(1));
+            assert_eq!(header.msg_type, someip::MessageType::TpRequestNoReturn);
+        }
+        else {
+            panic!("no error returned from message 3.")
+        }
+    }
+
+    #[test]
+    fn reassemble_3segments_down_ok() {
+        let msg3 = make_message(64,0, false, 0xa1);
+        let msg2 = make_message(32, 4, true, 0xb0);
+        let msg1 = make_message(128, 6, true, 0xcf);
+
+        let mut ra = Reassembler::new(1024, 4096, 5, &msg1.header);
+        assert!( ra.process_segment(msg1).is_ok() );
+        assert!( ra.process_segment(msg2).is_ok() );
+        assert!( ra.process_segment(msg3).is_ok() );
+
+        let result = ra.finish();
+        assert!(result.is_ok());
+        let msg = result.unwrap();
+        assert_eq!(msg.header.message_id, someip::MessageId::from(0x01020304));
+        assert_eq!(msg.header.length, 64usize + 32usize + 128usize + someip::SOMEIP_HEADER_LEN_PART);
+        assert_eq!(msg.header.request_id, someip::RequestId::from(0xc1c28080));
+        assert_eq!(msg.header.proto_version, someip::ProtocolVersion::Version1);
+        assert_eq!(msg.header.intf_version, someip::InterfaceVersion::from(1));
+        assert_eq!(msg.header.msg_type, someip::MessageType::RequestNoReturn);
+        assert_eq!(msg.header.ret_code, someip::ReturnCode::Ok);
+        assert!(msg.header.tp_header.is_none());
+        assert_eq!(msg.payload.len(), 224);
+        assert_eq!(msg.payload.as_ref()[0], 0xa1);
+        assert_eq!(msg.payload.as_ref()[64], 0xb0);
+        assert_eq!(msg.payload.as_ref()[96], 0xcf);
+    }
+
+    #[test]
+    fn reassemble_3segments_up_ok() {
+        let msg1 = make_message(64,0, true, 0xa1);
+        let msg2 = make_message(32, 4, true, 0xb0);
+        let msg3 = make_message(128, 6, false, 0xcf);
+
+        let mut ra = Reassembler::new(1024, 4096, 5, &msg1.header);
+        assert!( ra.process_segment(msg1).is_ok() );
+        assert!( ra.process_segment(msg2).is_ok() );
+        assert!( ra.process_segment(msg3).is_ok() );
+
+        let result = ra.finish();
+        assert!(result.is_ok());
+        let msg = result.unwrap();
+        assert_eq!(msg.header.message_id, someip::MessageId::from(0x01020304));
+        assert_eq!(msg.header.length, 64usize + 32usize + 128usize + someip::SOMEIP_HEADER_LEN_PART);
+        assert_eq!(msg.header.request_id, someip::RequestId::from(0xc1c28080));
+        assert_eq!(msg.header.proto_version, someip::ProtocolVersion::Version1);
+        assert_eq!(msg.header.intf_version, someip::InterfaceVersion::from(1));
+        assert_eq!(msg.header.msg_type, someip::MessageType::RequestNoReturn);
+        assert_eq!(msg.header.ret_code, someip::ReturnCode::Ok);
+        assert!(msg.header.tp_header.is_none());
+        assert_eq!(msg.payload.len(), 224);
+        assert_eq!(msg.payload.as_ref()[0], 0xa1);
+        assert_eq!(msg.payload.as_ref()[64], 0xb0);
+        assert_eq!(msg.payload.as_ref()[96], 0xcf);
     }
 }
