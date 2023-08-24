@@ -17,3 +17,4 @@ path = "examples/recv_udp/main.rs"
 bytes = { version = "1" }
 tokio = { version = "1", features = ["full"]}
 tokio-util = { version = "0.7",  features = ["codec"] }
+log = { version = "0" }

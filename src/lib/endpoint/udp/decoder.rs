@@ -13,17 +13,168 @@
 // You should have received a copy of the GNU General Public License along with Foobar.
 // If not, see <https://www.gnu.org/licenses/>.
 
+use std::collections::HashMap;
+use std::net::SocketAddr;
 use bytes::{Buf, BytesMut};
 use crate::endpoint::someip;
 use crate::endpoint::types;
+use crate::endpoint::udp::reassembler as rsm;
+
+
+/// Configuration parameters for a reassembly/fragmentation.
+#[derive(Debug, Clone)]
+pub struct TpConfig {
+    /// initial segmentation task buffer size for payload
+    pub initial_payload_buffer_size: usize,
+    /// maximum segmentation task buffer size for payload
+    pub max_payload_size: usize,
+    /// alive counter start value
+    pub alive_counter_init: u8,
+}
+
 
 /// Message decoder for SOME/IP messages incoming via UDP.
-///
-pub struct Decoder {}
-
+pub struct Decoder {
+    /// Ongoing reassembly tasks.
+    reassemblers: HashMap<rsm::ReassemblyKey, rsm::Reassembler>,
+    /// Configuration for reassembly tasks.
+    configs: HashMap<(someip::MessageId, someip::MessageType, someip::InterfaceVersion), TpConfig>,
+}
 
 impl Decoder {
+    pub fn new() -> Self {
+        Decoder{ reassemblers: HashMap::new(), configs: HashMap::new() }
+    }
 
+    /// This method should be called periodically at fixed time interval to cleanup
+    /// stale and overdue reassembly tasks.
+    /// The method runs through all ongoing reassembly tasks and decrements their alive counter
+    /// by one - if the counter is 0 the reassembly is cancelled.
+    pub fn cleanup(&mut self) {
+        let mut to_delete = vec![];
+        for r in &mut self.reassemblers {
+            if r.1.tick() {
+                to_delete.push(r.0.clone());
+            }
+        }
+        for k in to_delete {
+            self.reassemblers.remove(&k);
+            log::warn!("Cancelling reassembly for {:?} by timeout", k);
+        }
+    }
+
+    /// Process a single received UDP datagram from `peer`.
+    /// For each completely received message the `callback` is called as well as for each
+    /// encountered error.
+    pub fn process_datagram<M>(&mut self, peer: SocketAddr, dgrm: BytesMut, mut callback: M)
+        where M: FnMut(types::Result< Option<someip::Message> >)
+    {
+        process_datagram(dgrm, |result| {
+            match result {
+                Ok(msg) => {
+                    callback( self.process_message(peer, msg));
+                    // errors reported from process message are higher level errors where
+                    // we have already successfully decoded the SOME/IP message - so we can
+                    // continue to parse the next one from the datagram
+                    true
+                },
+                Err(e) => {
+                    let cont = match &e {
+                        // provided that the length field works also in later SOME/IP versions
+                        // like in Version 1, we can continue parsing the packet after protocol
+                        // version errors
+                        types::Error::ProtocolVersionUnsupported(_) => true,
+                        _ => false,
+                    };
+                    callback(Err(e));
+                    cont
+                },
+            }
+        })
+    }
+
+    /// process a successfully received SOME/IP message from UDP.
+    fn process_message(&mut self, peer: SocketAddr, msg: someip::Message)
+            -> types::Result< Option<someip::Message> >
+    {
+        let key = rsm::make_reassembly_key(&peer, &msg.header);
+        if !msg.header.is_tp() {
+            self.cancel_reassembly(&key);
+            return Ok( Some(msg) );
+        }
+        self.process_segment(msg, key)
+    }
+
+    /// process a segmented SOME/IP message from UDP
+    fn process_segment(&mut self, mut msg: someip::Message, key: rsm::ReassemblyKey)
+            -> types::Result< Option<someip::Message> >
+    {
+        assert!(msg.header.tp_header.is_some());
+        if self.tp_allowed(&msg.header) {
+            let is_not_final = msg.header.tp_header.as_ref().unwrap().more;
+
+            if is_not_final && msg.payload.len() % rsm::SOMEIP_TP_OFFSET_SCALE != 0 {
+                log::warn!("Received non-final segment for {:?} with payload not a multiple of 16 bytes.",
+                    key);
+                self.reassemblers.remove(&key);
+                return Err(types::Error::UdpIntermediateSegmentInvalidSize(msg.header));
+            }
+
+            if let Some(reassembler) = self.reassemblers.get_mut(&key) {
+                // subsequent segments
+                if let Err(err) = reassembler.process_segment(msg) {
+                    log::warn!("Reassembly for {:?} aborted: {:?}", key, err);
+                    self.reassemblers.remove(&key);
+                    return Err(err);
+                }
+                if is_not_final {
+                   return Ok(None)
+                }
+                let reassembler = self.reassemblers.remove(&key).expect("");
+                return reassembler.finish().map(|msg| Some(msg))
+            } else {
+                // initial segment
+                if is_not_final {
+                    let tp_config = self.get_config(&msg.header).expect("");
+                    let mut reassembler = rsm::Reassembler::new(
+                        tp_config.initial_payload_buffer_size,
+                        tp_config.max_payload_size,
+                        tp_config.alive_counter_init,
+                        &msg.header);
+                    if let Err(err) = reassembler.process_segment(msg) {
+                        log::warn!("Reassembly for {:?} aborted: {:?}", key, err);
+                        return Err(err);
+                    }
+                    self.reassemblers.insert(key, reassembler);
+                    Ok( None )
+                } else {
+                    log::warn!("Initial segment that is final from {:?}.", key);
+                    // deliver it anyway
+                    rsm::finish_reassembled_header(&mut msg);
+                    Ok( Some(msg) )
+                }
+            }
+        } else {
+            Err(types::Error::UdpSegmentationNotAllowed(msg.header))
+        }
+    }
+
+    /// deletes an ongoing reassembly if there is one and logs a warning
+    fn cancel_reassembly(&mut self, key: &rsm::ReassemblyKey) {
+        if self.reassemblers.contains_key(key) {
+            log::warn!("Cancelling reassembly for {:?} by non segmented message", key);
+            self.reassemblers.remove(key);
+        }
+    }
+
+    /// Returns the TP configuration for the given header.
+    fn get_config(&self, header: &someip::Header) -> Option<&TpConfig> {
+        self.configs.get(&(header.message_id.clone(), header.msg_type, header.intf_version.clone()) )
+    }
+
+    fn tp_allowed(&self, header: &someip::Header) -> bool {
+        self.configs.contains_key(&(header.message_id.clone(), header.msg_type, header.intf_version.clone()))
+    }
 }
 
 /// Decode a UDP datagram into a sequence of SOME/IP messages
@@ -32,7 +183,7 @@ impl Decoder {
 /// decoding continues until the datagram buffer is empty.
 /// NOTE: Continuing to decode the datagram after an error has been received might lead to unexpected
 ///       results, because we cannot guarantee that the buffer is at some message boundary.
-pub fn process_datagram<M>(mut dgrm: BytesMut, mut callback: M)
+fn process_datagram<M>(mut dgrm: BytesMut, mut callback: M)
     where M: FnMut(types::Result<someip::Message>) -> bool,
 {
     while !dgrm.is_empty() {

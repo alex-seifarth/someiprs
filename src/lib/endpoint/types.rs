@@ -56,6 +56,12 @@ pub enum Error {
     UdpIncompleteHeader,
     /// UDP (or unix domain dgrm) datagram too short for expected payload
     UdpPayloadLongerThanHeader(Header),
+    /// Segmentation/Reassembly is not allowed/configured for the message.
+    UdpSegmentationNotAllowed(Header),
+    /// Received an intermediate segment (or first one) where payload size is not a multiple of 16.
+    UdpIntermediateSegmentInvalidSize(Header),
+    /// While reassmbling a hole in the segment sequence was detected.
+    UdpSegmentationHoleDetected(Header),
 
 }
 
