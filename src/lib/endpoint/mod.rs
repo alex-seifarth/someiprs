@@ -24,7 +24,7 @@ mod udp;
 
 mod someip;
 mod types;
-mod someip_decoder;
+//mod someip_decoder;
 mod udp_rx_endpoint;
 
 use udp_rx_endpoint::{UdpRxEndpoint, TxSender, TxReceiver};

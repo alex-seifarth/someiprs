@@ -14,7 +14,6 @@
 // If not, see <https://www.gnu.org/licenses/>.
 
 use std::net::SocketAddr;
-use std::os::unix::raw::mode_t;
 use bytes::{Bytes};
 use crate::endpoint::someip;
 use crate::endpoint::types;
