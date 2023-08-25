@@ -93,9 +93,28 @@ impl Encoder {
         !self.is_completed_empty()
     }
 
+    /// Processes the a new message `msg` for transmission.
+    /// #Args
+    /// - `msg`                 The new message. If too big for one datagram it will be segmented.
+    /// - `retention_time`      The maximum time the new message can be held back to fill the datagram.
+    /// #Returns
+    /// The message returns `true` when completed datagrams are availale (see `get_completed()`),
+    /// otherwise `false` is returned.
+    pub fn prepare_msg(&mut self, mut msg: someip::Message, retention_time: Duration) -> bool {
+        if someip::final_msg_size(&msg) > self.max_datagram_size {
+            let segs = segment_msg(msg, self.seg_pl_len, self.offset_factor);
+            for segm in segs {
+                self.prepare_msg_int(segm, retention_time.clone());
+            }
+            !self.is_completed_empty()
+        } else {
+            self.prepare_msg_int(msg, retention_time)
+        }
+    }
+
     /// Processes a new message for transmission and returns `true` when at least one completed
     /// datagram is waiting.
-    pub fn prepare_msg(&mut self, mut msg: someip::Message, retention_time: Duration) -> bool {
+    fn prepare_msg_int(&mut self, mut msg: someip::Message, retention_time: Duration) -> bool {
         let due = Instant::now() + retention_time;
         let len = someip::final_msg_size(&msg);
         if len > self.max_datagram_size {
@@ -199,6 +218,7 @@ fn calc_offset_scale(seg_pl_len: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use std::arch::x86_64::_mm_sha256msg1_epu32;
     use std::thread::sleep;
     use crate::endpoint::someip::MessageType;
     use super::*;
@@ -217,6 +237,20 @@ mod tests {
         let mut data = BytesMut::zeroed(len);
         data.fill(value);
         someip::Message{ header: hdr, payload: data.freeze()}
+    }
+
+    #[test]
+    fn segmented_delayed() {
+        let mut encdr = Encoder::new_default();
+        let mut msg1 = make_msg(123, 0x01);
+        let mut msg2 = make_msg(5600, 0x01);
+        let mut msg3 = make_msg(8, 0x01);
+
+        assert!(!encdr.prepare_msg(msg1, Duration::from_secs(1)));
+        assert!(encdr.prepare_msg(msg2, Duration::from_secs(1)));
+        assert_eq!(encdr.get_completed().len(), 5);
+        assert!(encdr.prepare_msg(msg3, Duration::from_millis(0)));
+        assert_eq!(encdr.get_completed().len(), 1);
     }
 
     #[test]
