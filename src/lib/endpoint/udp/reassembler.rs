@@ -123,9 +123,13 @@ impl Reassembler {
         }
         self.payload.as_mut_slice()[start..end].copy_from_slice(msg.payload.as_ref());
         if self.mode == ReassemblyMode::Up {
-            self.next_offset = end;
+            if end > self.next_offset {
+                self.next_offset = end;
+            }
         } else {
-            self.next_offset = start;
+            if start < self.next_offset {
+                self.next_offset = start;
+            }
         }
 
         // reset timeout = ttl

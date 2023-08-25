@@ -20,10 +20,10 @@ use tokio_util::sync::CancellationToken;
 use bytes::{BytesMut, Bytes};
 use tokio::task::JoinHandle;
 
-mod udp;
+pub mod udp;
 
-mod someip;
-mod types;
+pub mod someip;
+pub mod types;
 //mod someip_decoder;
 mod udp_rx_endpoint;
 

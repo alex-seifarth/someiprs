@@ -32,18 +32,29 @@ pub struct TpConfig {
     pub alive_counter_init: u8,
 }
 
+/// Key to lookup configurations.
+pub type ConfigKey = (someip::MessageId, someip::MessageType, someip::InterfaceVersion);
+
+/// creates a [ConfigKey] for the header.
+pub fn make_config_key_from_header(header: &someip::Header) -> ConfigKey {
+    (header.message_id.clone(), header.msg_type, header.intf_version.clone())
+}
 
 /// Message decoder for SOME/IP messages incoming via UDP.
+/// The decoder supports the reassembly of segmented SOME/IP messages.
 pub struct Decoder {
     /// Ongoing reassembly tasks.
     reassemblers: HashMap<rsm::ReassemblyKey, rsm::Reassembler>,
     /// Configuration for reassembly tasks.
-    configs: HashMap<(someip::MessageId, someip::MessageType, someip::InterfaceVersion), TpConfig>,
+    configs: HashMap<ConfigKey, TpConfig>,
+    /// Default configuration
+    def_config: Option<TpConfig>,
 }
 
 impl Decoder {
+    /// Creates a new decoder object.
     pub fn new() -> Self {
-        Decoder{ reassemblers: HashMap::new(), configs: HashMap::new() }
+        Decoder{ reassemblers: HashMap::new(), configs: HashMap::new(), def_config:None }
     }
 
     /// This method should be called periodically at fixed time interval to cleanup
@@ -169,11 +180,32 @@ impl Decoder {
 
     /// Returns the TP configuration for the given header.
     fn get_config(&self, header: &someip::Header) -> Option<&TpConfig> {
-        self.configs.get(&(header.message_id.clone(), header.msg_type, header.intf_version.clone()) )
+        if let Some(tpconfig) = self.configs.get(&make_config_key_from_header(header)) {
+            Some(tpconfig)
+        } else {
+            self.def_config.as_ref()
+        }
     }
 
+    /// Returns `true` when a configuration exists for the message header.
     fn tp_allowed(&self, header: &someip::Header) -> bool {
-        self.configs.contains_key(&(header.message_id.clone(), header.msg_type, header.intf_version.clone()))
+        self.def_config.is_some() ||
+        self.configs.contains_key(&make_config_key_from_header(header))
+    }
+
+    /// Sets the [TpConfig] for the given key. If `config` is `None` then the configuration, if
+    /// there is one, is deleted.
+    pub fn set_config(&mut self, ck: ConfigKey, config: Option<TpConfig>) {
+        if let Some(tpc) = config {
+            self.configs.insert(ck, tpc);
+        } else {
+            self.configs.remove(&ck);
+        }
+    }
+
+    /// Sets or unsets the global default [TpConfig].
+    pub fn set_global_config(&mut self, config: Option<TpConfig>) {
+        self.def_config = config;
     }
 }
 
@@ -227,7 +259,70 @@ fn process_datagram_one(dgrm: &mut BytesMut) -> types::Result<someip::Message> {
 
 #[cfg(test)]
 mod tests {
+    use bytes::BufMut;
     use super::*;
+
+    fn make_segment_data(len: usize, offset:u32, more: bool, tag: u8) -> BytesMut {
+        let mut b = BytesMut::with_capacity(1024);
+        b.put_u32(0x01020304); // MessageId 0x01020304
+        b.put_u32(len as u32 + someip::SOMEIP_TP_HEADER_SIZE as u32 + someip::SOMEIP_HEADER_LEN_PART as u32);
+        b.put_u32(0xc1c2f0f0); // SessionId 0xc1c2f0f0;
+        b.put_u32(0x01122000); // Protocol: 1, InterfaceVersion = 0x12, msg_type = TpRequest, ret_code: Ok
+        b.put_u32( (offset * rsm::SOMEIP_TP_OFFSET_SCALE as u32) | if more {0x01} else {0x00} );
+        b.resize( len + someip::SOMEIP_HEADER_SIZE + someip::SOMEIP_TP_HEADER_SIZE, tag);
+        b
+    }
+
+    #[test]
+    fn decode_segmented_ok1() {
+        // peer A
+        let a: SocketAddr = "10.10.2.1:8089".parse().unwrap();
+        let a1 = make_segment_data(64, 0, true, 0x11);
+        let a2 = make_segment_data(128, 4, true, 0x12);
+        let a3 = make_segment_data(48, 12, false, 0x13);
+
+        // peer B
+        let b: SocketAddr = "10.16.2.2:8100".parse().unwrap();
+        let b1 = make_segment_data(64, 0, true, 0x01);
+        let b2 = make_segment_data(128, 4, true, 0x02);
+        let b3 = make_segment_data(64, 12, false, 0x03);
+
+        let mut decoder = Decoder::new();
+        decoder.set_global_config(Some(TpConfig{
+            max_payload_size: 1024,
+            initial_payload_buffer_size: 1024,
+            alive_counter_init: 5
+        }));
+
+        let mut msg_result = Ok(None);
+
+        decoder.process_datagram(a.clone(), a1, |mr| {msg_result = mr} ) ;
+        assert!(msg_result.is_ok() && msg_result.as_ref().unwrap().is_none(), "Result is {:?}", msg_result);
+
+        decoder.process_datagram(b.clone(), b1, |mr| {msg_result = mr} ) ;
+        assert!(msg_result.is_ok() && msg_result.as_ref().unwrap().is_none(), "Result is {:?}", msg_result);
+        decoder.process_datagram(b.clone(), b2, |mr| {msg_result = mr} ) ;
+        assert!(msg_result.is_ok() && msg_result.as_ref().unwrap().is_none(), "Result is {:?}", msg_result);
+
+        decoder.process_datagram(a.clone(), a2, |mr| {msg_result = mr} ) ;
+        assert!(msg_result.is_ok() && msg_result.as_ref().unwrap().is_none(), "Result is {:?}", msg_result);
+        decoder.process_datagram(a.clone(), a3, |mr| {msg_result = mr} ) ;
+        assert!(msg_result.is_ok() && msg_result.as_ref().unwrap().is_some(), "Result is {:?}", msg_result);
+        let msg_a = msg_result.unwrap().take().unwrap();
+        assert_eq!(msg_a.payload.len(), 240);
+        assert_eq!(msg_a.payload.as_ref()[0], 0x11);
+        assert_eq!(msg_a.payload.as_ref()[64], 0x12);
+        assert_eq!(msg_a.payload.as_ref()[192], 0x13);
+
+        msg_result = Ok(None);
+        decoder.process_datagram(b.clone(), b3, |mr| {msg_result = mr} ) ;
+        assert!(msg_result.is_ok() && msg_result.as_ref().unwrap().is_some(), "Result is {:?}", msg_result);
+        let msg_b = msg_result.unwrap().take().unwrap();
+        assert_eq!(msg_b.payload.len(), 256);
+        assert_eq!(msg_b.payload.as_ref()[0], 0x01);
+        assert_eq!(msg_b.payload.as_ref()[64], 0x02);
+        assert_eq!(msg_b.payload.as_ref()[192], 0x03);
+    }
 
     #[test]
     fn decode_datagram_err1() {
