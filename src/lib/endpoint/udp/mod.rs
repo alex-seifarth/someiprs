@@ -12,5 +12,7 @@
 //
 // You should have received a copy of the GNU General Public License along with Foobar.
 // If not, see <https://www.gnu.org/licenses/>.
+
 pub mod decoder;
+pub mod encoder;
 mod reassembler;

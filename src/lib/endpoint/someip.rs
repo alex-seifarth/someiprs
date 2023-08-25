@@ -355,9 +355,9 @@ impl Header {
     /// Write the header into the buffer `buf`
     /// NOTE 1: The method does not do any buffer capacity reservation before.
     /// NOTE 2: This method panics if the required length field value exceeds 2^32-1
-    pub fn write_to(&self, buf: &mut BytesMut, payload_len: usize) {
+    pub fn write_to(&self, buf: &mut BytesMut) {
         buf.put_u32(self.message_id.id);
-        buf.put_u32(self.calc_length(payload_len) as u32);
+        buf.put_u32(self.length as u32);
         buf.put_u32(self.request_id.id);
         buf.put_u8(self.proto_version.value());
         buf.put_u8(self.intf_version.id);
@@ -453,6 +453,21 @@ pub fn make_key(header: &Header) -> SegmentationKey {
 pub struct Message {
     pub header: Header,
     pub payload: Bytes,
+}
+
+/// Returns the final size in bytes that the message will allocate in the frame.
+pub fn final_msg_size(msg: &Message) -> usize {
+    if msg.header.is_tp() {
+        SOMEIP_HEADER_SIZE + SOMEIP_TP_HEADER_SIZE + msg.payload.len()
+    } else {
+        SOMEIP_HEADER_SIZE + msg.payload.len()
+    }
+}
+
+/// Sets the length value in the message header
+pub fn fix_length(msg: &mut Message) {
+    msg.header.length = msg.payload.len() + SOMEIP_HEADER_LEN_PART +
+        if msg.header.is_tp() {SOMEIP_TP_HEADER_SIZE} else {0usize};
 }
 
 #[cfg(test)]

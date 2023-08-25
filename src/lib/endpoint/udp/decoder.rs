@@ -124,6 +124,11 @@ impl Decoder {
         if self.tp_allowed(&msg.header) {
             let is_not_final = msg.header.tp_header.as_ref().unwrap().more;
 
+            // TODO This doesn't work correctly when a down-reassembly is done - because in this
+            //      case also the last segment (which has offset=0 then) would be allowed to have
+            //      size different than multiple of 16 which will fail. On the other hand
+            //      the very first received segment in this case (which the last in the memory layout)
+            //      is forbidden to have size of not a multiple of 16.
             if is_not_final && msg.payload.len() % rsm::SOMEIP_TP_OFFSET_SCALE != 0 {
                 log::warn!("Received non-final segment for {:?} with payload not a multiple of 16 bytes.",
                     key);

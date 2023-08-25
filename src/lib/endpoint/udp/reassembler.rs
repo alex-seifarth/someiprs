@@ -230,7 +230,6 @@ mod tests {
     fn reassemble_tick_death() {
         let msg1 = make_message(64,0, true, 0xa1);
         let msg2 = make_message(32, 4, true, 0xb0);
-        let msg3 = make_message(128, 7, true, 0xcf);
 
         let mut ra = Reassembler::new(1024, 4096, 5, &msg1.header);
         assert!( ra.process_segment(msg1).is_ok() );
