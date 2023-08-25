@@ -13,9 +13,11 @@
 // You should have received a copy of the GNU General Public License along with Foobar.
 // If not, see <https://www.gnu.org/licenses/>.
 
+use std::cmp::min;
 use std::time::{Duration, Instant};
 use bytes::BytesMut;
 use crate::endpoint::someip;
+use crate::endpoint::someip::TpHeader;
 
 /// Maximum payload size for a UDP datagram filled with SOME/IP messages
 /// PRS_SOMEIP_00730 (note the constant includes the maximum header size)
@@ -44,6 +46,10 @@ pub struct Encoder {
     waiting_size: usize,
     /// buffer for completed datagrams
     completed: Vec<BytesMut>,
+    /// maximum segment payload length
+    seg_pl_len: usize,
+    /// how many offset (TP segment) fit into seg_pl_len
+    offset_factor: u32,
 }
 
 impl Encoder {
@@ -58,12 +64,15 @@ impl Encoder {
     /// - `max_datagram_size`         Maximum datagram size.
     pub fn new(max_datagram_size: usize) -> Self
     {
+        let seg_pl_len = calc_pl_seg_len(max_datagram_size);
         Encoder{ max_datagram_size,
             next_schedule: None,
             waiting: Vec::new(),
             waiting_size: 0usize,
             completed: Vec::new(),
-            datagram_fill_threshold: ((max_datagram_size as f32) * DATAGRAM_TX_THRESHOLD) as usize
+            datagram_fill_threshold: ((max_datagram_size as f32) * DATAGRAM_TX_THRESHOLD) as usize,
+            seg_pl_len,
+            offset_factor: calc_offset_scale(seg_pl_len)
         }
     }
 
@@ -152,9 +161,46 @@ impl Encoder {
     }
 }
 
+/// Segments a single SOME/IP message into multiple segments fitting into the maximum datagram
+/// size.
+fn segment_msg(mut msg: someip::Message, seg_pl_len: usize, offset_factor: u32)
+    -> Vec<someip::Message>
+{
+    debug_assert!(seg_pl_len > 0 && seg_pl_len % someip::SOMEIP_TP_OFFSET_SCALE == 0);
+    debug_assert!(offset_factor as usize * someip::SOMEIP_TP_OFFSET_SCALE == seg_pl_len);
+
+    let mut v = Vec::new();
+    msg.header.msg_type = msg.header.msg_type.convert_to_tp();
+
+    let seg_count = ((msg.payload.len() + seg_pl_len - 1) / seg_pl_len) as u32;
+    assert!(seg_count > 1);
+
+    for i in 0..seg_count {
+        let pl = msg.payload.split_to(min(seg_pl_len, msg.payload.len()));
+        let mut hdr = msg.header.clone();
+        hdr.length = pl.len() + someip::SOMEIP_HEADER_LEN_PART + someip::SOMEIP_TP_HEADER_SIZE;
+        hdr.tp_header = Some( TpHeader{ offset: i * offset_factor, more: i != seg_count-1});
+        v.push(someip::Message{header: hdr, payload: pl })
+    }
+    v
+}
+
+/// Calculates the max payload size for segments depending on the maximum datagram size.
+fn calc_pl_seg_len(max_datagram_size: usize) -> usize {
+    ((max_datagram_size - someip::SOMEIP_HEADER_SIZE - someip::SOMEIP_TP_HEADER_SIZE)
+        / someip::SOMEIP_TP_OFFSET_SCALE)
+        * someip::SOMEIP_TP_OFFSET_SCALE
+}
+
+/// Calculates the scale factor for the offset field in the TP header.
+fn calc_offset_scale(seg_pl_len: usize) -> u32 {
+    (seg_pl_len / someip::SOMEIP_TP_OFFSET_SCALE) as u32
+}
+
 #[cfg(test)]
 mod tests {
     use std::thread::sleep;
+    use crate::endpoint::someip::MessageType;
     use super::*;
 
     fn make_msg(len: usize, value: u8) -> someip::Message {
@@ -171,6 +217,30 @@ mod tests {
         let mut data = BytesMut::zeroed(len);
         data.fill(value);
         someip::Message{ header: hdr, payload: data.freeze()}
+    }
+
+    #[test]
+    fn tst_segment_msg() {
+        let mut msg = make_msg(5600, 0x01);
+        msg.header.msg_type = MessageType::Response;
+
+        let segs = segment_msg(msg, 1376, 86);
+        assert_eq!(segs.len(), 5);
+        assert_eq!(segs[0].payload.len(), 1376);
+        assert_eq!(segs[0].header.msg_type, MessageType::TpResponse);
+        assert_eq!(segs[0].header.tp_header.as_ref().unwrap().offset, 0);
+        assert!(segs[0].header.tp_header.as_ref().unwrap().more);
+        assert_eq!(segs[1].payload.len(), 1376);
+        assert_eq!(segs[1].header.msg_type, MessageType::TpResponse);
+        assert_eq!(segs[1].header.tp_header.as_ref().unwrap().offset, 86);
+        assert!(segs[1].header.tp_header.as_ref().unwrap().more);
+        assert_eq!(segs[2].payload.len(), 1376);
+        assert_eq!(segs[2].header.tp_header.as_ref().unwrap().offset, 172);
+        assert!(segs[2].header.tp_header.as_ref().unwrap().more);
+        assert_eq!(segs[4].payload.len(), 96);
+        assert_eq!(segs[4].header.msg_type, MessageType::TpResponse);
+        assert_eq!(segs[4].header.tp_header.as_ref().unwrap().offset, 344);
+        assert!(!segs[4].header.tp_header.as_ref().unwrap().more);
     }
 
     #[test]
@@ -245,5 +315,15 @@ mod tests {
         assert!( !encdr.prepare_msg(msg1, Duration::from_secs(1500)) );
         assert!( !encdr.prepare_msg(msg2, Duration::from_secs(1500)) );
         assert!( encdr.prepare_msg(msg3, Duration::from_secs(1500)) );
+    }
+
+    #[test]
+    fn test_seg_pl_len() {
+        assert_eq!(calc_pl_seg_len(1400), 1376);
+    }
+
+    #[test]
+    fn test_offset_scale() {
+        assert_eq!(calc_offset_scale(1376), 86);
     }
 }

@@ -15,4 +15,4 @@
 
 pub mod decoder;
 pub mod encoder;
-mod reassembler;
+pub mod reassembler;
