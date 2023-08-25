@@ -2,7 +2,15 @@ name: Cargo Build & Test
 
 on:
   push:
+    branches:
+      - 'master'
   pull_request:
+    types:
+      - opened
+      - reopened
+    branches:
+      - 'feature/**'
+      - 'bugfix/**'
 
 env:
   CARGO_TERM_COLOR: always
