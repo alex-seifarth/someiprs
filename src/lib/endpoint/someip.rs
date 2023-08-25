@@ -194,6 +194,18 @@ impl MessageType {
             _ => false,
         }
     }
+
+    /// Converts a message type into its TP counterpart for segments.
+    pub fn convert_to_tp(&self) -> Self {
+        match self {
+            MessageType::Request => MessageType::TpRequest,
+            MessageType::RequestNoReturn => MessageType::TpRequestNoReturn,
+            MessageType::Notification => MessageType::TpNotification,
+            MessageType::Response => MessageType::TpResponse,
+            MessageType::Error => MessageType::TpError,
+            _ => self.clone(),
+        }
+    }
 }
 
 impl From<u8> for MessageType {
