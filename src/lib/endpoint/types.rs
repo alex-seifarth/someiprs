@@ -14,35 +14,10 @@
 // If not, see <https://www.gnu.org/licenses/>.
 
 use std::net::SocketAddr;
-use tokio::sync::mpsc::{Receiver, Sender};
 use crate::endpoint::someip;
 use crate::endpoint::someip::Header;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UdpRxError {
-
-}
-
-pub enum Transport {
-    UDP, TCP
-}
-
-pub enum Command {
-    /// SOME/IP messages received by rx endpoints
-    Received{ transport: Transport, local: SocketAddr, peer: SocketAddr, msg: someip::Message },
-    /// SOME/IP messages that shall be sent by tx endpoints
-    Transmit{ peer: SocketAddr, msg: someip::Message },
-    ///
-    AddService(someip::ServiceId, MessageSender, usize /*max segmentation size*/),
-
-    /// Remove the service from this endpoint.
-    RemService(someip::ServiceId),
-
-}
-
-pub type MessageSender = Sender<Command>;
-pub type MessageReceiver = Receiver<Command>;
-
+/// Error for endpoint message processing.
 #[derive(Debug, Clone)]
 pub enum Error {
     /// Maximum payload size exceeded.
@@ -51,7 +26,6 @@ pub enum Error {
     ProtocolVersionUnsupported(Header),
     /// The length field is shorter then the headers
     LengthFieldValueTooSmall(Header),
-
     /// UDP datagram ends in the middle of a SOME/IP Header.
     UdpIncompleteHeader,
     /// UDP (or unix domain dgrm) datagram too short for expected payload
@@ -60,10 +34,33 @@ pub enum Error {
     UdpSegmentationNotAllowed(Header),
     /// Received an intermediate segment (or first one) where payload size is not a multiple of 16.
     UdpIntermediateSegmentInvalidSize(Header),
-    /// While reassmbling a hole in the segment sequence was detected.
+    /// While reassembling a hole in the segment sequence was detected.
     UdpSegmentationHoleDetected(Header),
-
 }
 
+/// Result type for message processing.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Transport type for received/send SOME/IP messages.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TransportBinding {
+    Udp, Tcp, Multicast
+}
+
+/// Protocol to communicate with endpoints.
+#[derive(Debug)]
+pub enum EndpointCmd {
+    /// Sent by Rx part of an endpoint when a SOME/IP message has been received
+    Received{transport: TransportBinding, local: SocketAddr, peer: SocketAddr, msg: someip::Message},
+    /// Sent to Tp part of an endpoint when a SOME/IP message shall be sent
+    Send{transport: TransportBinding, local: SocketAddr, peer: SocketAddr, msg: someip::Message},
+
+    EndpointDown{transport: TransportBinding, local: SocketAddr },
+
+    AddService{svc: someip::ServiceId, sender: EndpointSender },
+
+    RemService{svc: someip::ServiceId },
+}
+
+pub type EndpointReceiver = tokio::sync::mpsc::Receiver<EndpointCmd>;
+pub type EndpointSender = tokio::sync::mpsc::Sender<EndpointCmd>;
