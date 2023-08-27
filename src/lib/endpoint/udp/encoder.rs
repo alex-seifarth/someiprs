@@ -28,7 +28,7 @@ const DATAGRAM_TX_THRESHOLD: f32 = 0.8; // in %
 
 /// If the due time (retention) of a message is less than this away from `now` -> send the
 /// pending train and do not wait anymore.
-const MIN_RETENTION_TIME: Duration = Duration::from_micros(200);
+pub const MIN_RETENTION_TIME: Duration = Duration::from_micros(200);
 
 /// Encoder for SOME/IP messages into UDP datagrams
 /// - all messages must fit into the maximum allowed frame size (1420 bytes)
@@ -100,7 +100,7 @@ impl Encoder {
     /// #Returns
     /// The message returns `true` when completed datagrams are availale (see `get_completed()`),
     /// otherwise `false` is returned.
-    pub fn prepare_msg(&mut self, mut msg: someip::Message, retention_time: Duration) -> bool {
+    pub fn prepare_msg(&mut self, msg: someip::Message, retention_time: Duration) -> bool {
         if someip::final_msg_size(&msg) > self.max_datagram_size {
             let segs = segment_msg(msg, self.seg_pl_len, self.offset_factor);
             for segm in segs {
@@ -218,9 +218,7 @@ fn calc_offset_scale(seg_pl_len: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use std::arch::x86_64::_mm_sha256msg1_epu32;
     use std::thread::sleep;
-    use crate::endpoint::someip::MessageType;
     use super::*;
 
     fn make_msg(len: usize, value: u8) -> someip::Message {
@@ -242,9 +240,9 @@ mod tests {
     #[test]
     fn segmented_delayed() {
         let mut encdr = Encoder::new_default();
-        let mut msg1 = make_msg(123, 0x01);
-        let mut msg2 = make_msg(5600, 0x01);
-        let mut msg3 = make_msg(8, 0x01);
+        let msg1 = make_msg(123, 0x01);
+        let msg2 = make_msg(5600, 0x01);
+        let msg3 = make_msg(8, 0x01);
 
         assert!(!encdr.prepare_msg(msg1, Duration::from_secs(1)));
         assert!(encdr.prepare_msg(msg2, Duration::from_secs(1)));
@@ -256,23 +254,23 @@ mod tests {
     #[test]
     fn tst_segment_msg() {
         let mut msg = make_msg(5600, 0x01);
-        msg.header.msg_type = MessageType::Response;
+        msg.header.msg_type = someip::MessageType::Response;
 
         let segs = segment_msg(msg, 1376, 86);
         assert_eq!(segs.len(), 5);
         assert_eq!(segs[0].payload.len(), 1376);
-        assert_eq!(segs[0].header.msg_type, MessageType::TpResponse);
+        assert_eq!(segs[0].header.msg_type, someip::MessageType::TpResponse);
         assert_eq!(segs[0].header.tp_header.as_ref().unwrap().offset, 0);
         assert!(segs[0].header.tp_header.as_ref().unwrap().more);
         assert_eq!(segs[1].payload.len(), 1376);
-        assert_eq!(segs[1].header.msg_type, MessageType::TpResponse);
+        assert_eq!(segs[1].header.msg_type, someip::MessageType::TpResponse);
         assert_eq!(segs[1].header.tp_header.as_ref().unwrap().offset, 86);
         assert!(segs[1].header.tp_header.as_ref().unwrap().more);
         assert_eq!(segs[2].payload.len(), 1376);
         assert_eq!(segs[2].header.tp_header.as_ref().unwrap().offset, 172);
         assert!(segs[2].header.tp_header.as_ref().unwrap().more);
         assert_eq!(segs[4].payload.len(), 96);
-        assert_eq!(segs[4].header.msg_type, MessageType::TpResponse);
+        assert_eq!(segs[4].header.msg_type, someip::MessageType::TpResponse);
         assert_eq!(segs[4].header.tp_header.as_ref().unwrap().offset, 344);
         assert!(!segs[4].header.tp_header.as_ref().unwrap().more);
     }

@@ -23,11 +23,11 @@ async fn main() {
         .expect("Cannot resolve address");
     for addr in addrs {
         println!("Create UDP tasks for {:?}", addr);
-        task_handles.push(
-            tokio::spawn(
-                endpoint::start_udp_endpoint(addr, token.clone())
-            )
-        );
+        // task_handles.push(
+        //     tokio::spawn(
+        //         endpoint::start_udp_endpoint(addr, token.clone())
+        //     )
+        // );
     }
     println!("{} tasks started.", task_handles.len());
 
