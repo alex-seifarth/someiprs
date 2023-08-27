@@ -14,6 +14,7 @@
 // If not, see <https://www.gnu.org/licenses/>.
 
 use std::net::SocketAddr;
+use std::time::Duration;
 use crate::endpoint::someip;
 use crate::endpoint::someip::Header;
 
@@ -53,7 +54,11 @@ pub enum EndpointCmd {
     /// Sent by Rx part of an endpoint when a SOME/IP message has been received
     Received{transport: TransportBinding, local: SocketAddr, peer: SocketAddr, msg: someip::Message},
     /// Sent to Tp part of an endpoint when a SOME/IP message shall be sent
-    Send{transport: TransportBinding, local: SocketAddr, peer: SocketAddr, msg: someip::Message},
+    Send{transport: TransportBinding,
+         local: SocketAddr,
+         peer: SocketAddr,
+         msg: someip::Message,
+         retention_time: Duration},
 
     EndpointDown{transport: TransportBinding, local: SocketAddr },
 
