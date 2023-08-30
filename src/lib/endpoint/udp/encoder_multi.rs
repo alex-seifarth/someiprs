@@ -18,7 +18,6 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use bytes::BytesMut;
 use crate::endpoint::someip;
-use crate::endpoint::udp::encoder;
 use crate::endpoint::udp::encoder::{Encoder, MIN_RETENTION_TIME};
 
 struct PeerContext {
@@ -42,8 +41,10 @@ pub struct EncoderMulti {
 
 impl EncoderMulti {
 
+    /// Creates a new [EncoderMulti] object with default settings.
+    #[cfg(test)]
     pub fn new_default() -> Self {
-        EncoderMulti::new(encoder::DEFAULT_MAX_DATAGRAM_SIZE, Duration::from_secs(100))
+        EncoderMulti::new(someip::DEFAULT_UDP_MTU_SIZE, Duration::from_secs(100))
     }
 
     /// Creates a new [EncoderMulti] object.
@@ -63,10 +64,10 @@ impl EncoderMulti {
         self.next_schedule
     }
 
-    /// Returns the maximum datagram size for this [Encoder]
-    pub fn max_datagram_size(&self) -> usize {
-        self.max_datagram_size
-    }
+    // /// Returns the maximum datagram size for this [Encoder]
+    // pub fn max_datagram_size(&self) -> usize {
+    //     self.max_datagram_size
+    // }
 
     /// Cleanup for peers that have not been sent any message to for too long.
     /// This should be called periodically.
