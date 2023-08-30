@@ -55,7 +55,6 @@ pub enum EndpointCmd {
     Received{transport: TransportBinding, local: SocketAddr, peer: SocketAddr, msg: someip::Message},
     /// Sent to Tp part of an endpoint when a SOME/IP message shall be sent
     Send{transport: TransportBinding,
-         local: SocketAddr,
          peer: SocketAddr,
          msg: someip::Message,
          retention_time: Duration},

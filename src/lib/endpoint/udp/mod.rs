@@ -23,13 +23,12 @@ use crate::endpoint::types::{EndpointReceiver, TransportBinding, EndpointCmd};
 use crate::endpoint::udp::encoder_multi::EncoderMulti;
 
 pub mod decoder;
-pub mod encoder;
 pub mod reassembler;
-pub mod encoder_multi;
+mod encoder;
+mod encoder_multi;
 
 
-/// UDP receiver task
-///
+/// UDP sender task
 pub async fn udp_tx_task(socket: Arc<UdpSocket>,
                          max_datagram_size: usize,
                          mut channel: EndpointReceiver,
@@ -59,16 +58,16 @@ pub async fn udp_tx_task(socket: Arc<UdpSocket>,
             },
             cmd = channel.recv() => {
                 match cmd {
-                    None => {},
+                    None => {
+                        break
+                    },
                     Some(cmd) => {
                         match cmd {
                             EndpointCmd::Send {transport,
-                                               local,
                                                peer,
                                                msg,
                                                retention_time} => {
                                 debug_assert!(transport == TransportBinding::Udp);
-                                debug_assert!(local == socket.local_addr().unwrap());
                                 if encoder.prepare_msg(&peer, msg, retention_time) {
                                     send_datagrams(&mut encoder, socket.as_ref()).await;
                                 }
@@ -112,5 +111,89 @@ async fn send_datagrams(encoder: &mut EncoderMulti, socket: &UdpSocket) {
             },
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+    use std::sync::Mutex;
+    use super::*;
+    use bytes::BytesMut;
+    use crate::endpoint::someip;
+
+    fn make_msg(len: usize, value: u8) -> someip::Message {
+        let hdr = someip::Header{
+            message_id: someip::MessageId::from(0x12030405),
+            length: 0,
+            request_id: someip::RequestId::from(0xc1c28080),
+            proto_version: someip::ProtocolVersion::Version1,
+            intf_version: someip::InterfaceVersion::from(1),
+            msg_type: someip::MessageType::RequestNoReturn,
+            ret_code: someip::ReturnCode::Ok,
+            tp_header: None,
+        };
+        let mut data = BytesMut::zeroed(len);
+        data.fill(value);
+        someip::Message{ header: hdr, payload: data.freeze()}
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 5)]
+    async fn sender() {
+        let socket = Arc::new(
+            UdpSocket::bind("127.0.0.1:34900").await.expect("failed to setup socket"));
+        let (chnnl_tx, chnnl_rx) = tokio::sync::mpsc::channel(1024);
+        let ct = CancellationToken::new();
+        let received2 = Arc::new( Mutex::new( Vec::new() ) );
+        let received3 = received2.clone();
+
+        let h1 = tokio::spawn(
+            udp_tx_task(socket.clone(), 1420, chnnl_rx, ct.clone()));
+
+        let ct2 = ct.clone();
+        let h2 = tokio::spawn(async move {
+            let rxsock = UdpSocket::bind("127.0.0.1:35000").await.expect("client socket fail");
+            rxsock.connect("127.0.0.1:34900").await.expect("client connect fail");
+            let mut buf = vec![0; 1500];
+            loop {
+                select! {
+                    _ = ct2.cancelled() => break,
+                    rsz = rxsock.recv(&mut buf) => {
+                        match rsz {
+                            Ok(sz) => {
+                                if sz > 0 {
+                                    let mut msg_box = received3.lock().expect("");
+                                    msg_box.push( BytesMut::from( &buf[0..sz]) );
+                                }
+                            },
+                            Err(err) => {
+                                panic!("IO Error {:?}", err);
+                            },
+                        }
+                    }
+                }
+            }
+        });
+
+        let daddr: SocketAddr = "127.0.0.1:35000".parse().expect("");
+        for i in 0..10 {
+            let msg = make_msg(1024, 0xa0 + (i as u8));
+            chnnl_tx.send( EndpointCmd::Send {
+                transport: TransportBinding::Udp,
+                msg,
+                retention_time: Duration::from_millis(0),
+                peer: daddr.clone()
+            }).await.expect("Send on channel failed");
+        }
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
+        ct.cancel();
+        let _ = h1.await;
+        let _ = h2.await;
+
+        assert_eq!(received2.lock().unwrap().len(), 10);
+    }
+
+
+
 }
 
