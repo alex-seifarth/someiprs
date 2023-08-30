@@ -184,13 +184,21 @@ mod tests {
                 peer: daddr.clone()
             }).await.expect("Send on channel failed");
         }
-        tokio::time::sleep(Duration::from_millis(1500)).await;
 
+        let r = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                if received2.lock().expect("").len() == 10 {
+                    break;
+                }
+            }
+        }).await;
+
+        assert!(r.is_ok(), "Wait for received vector failed with timeout");
+        assert_eq!(received2.lock().unwrap().len(), 10);
         ct.cancel();
         let _ = h1.await;
         let _ = h2.await;
-
-        assert_eq!(received2.lock().unwrap().len(), 10);
     }
 
 
