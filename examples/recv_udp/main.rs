@@ -13,12 +13,10 @@
 // You should have received a copy of the GNU General Public License along with Foobar.
 // If not, see <https://www.gnu.org/licenses/>.
 
-use someiprs::endpoint;
-
 #[tokio::main]
 async fn main() {
     let token = tokio_util::sync::CancellationToken::new();
-    let mut task_handles : Vec<tokio::task::JoinHandle<()>> = vec![];
+    let task_handles : Vec<tokio::task::JoinHandle<()>> = vec![];
     let addrs = tokio::net::lookup_host("127.0.0.1:8089").await
         .expect("Cannot resolve address");
     for addr in addrs {

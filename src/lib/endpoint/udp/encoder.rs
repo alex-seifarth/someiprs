@@ -19,10 +19,6 @@ use bytes::BytesMut;
 use crate::endpoint::someip;
 use crate::endpoint::someip::TpHeader;
 
-/// Maximum payload size for a UDP datagram filled with SOME/IP messages
-/// PRS_SOMEIP_00730 (note the constant includes the maximum header size)
-pub const DEFAULT_MAX_DATAGRAM_SIZE: usize = 1420;
-
 /// Relative threshold from maximum datagram size, when datagram is filled enough.
 const DATAGRAM_TX_THRESHOLD: f32 = 0.8; // in %
 
@@ -55,8 +51,9 @@ pub struct Encoder {
 impl Encoder {
 
     /// Creates a new [Encoder] object with default configuration.
+    #[cfg(test)]
     pub fn new_default() -> Self {
-        Encoder::new(DEFAULT_MAX_DATAGRAM_SIZE)
+        Encoder::new(someip::DEFAULT_UDP_MTU_SIZE)
     }
 
     /// Creates new [Encoder].
@@ -82,10 +79,10 @@ impl Encoder {
         self.next_schedule
     }
 
-    /// Returns the maximum datagram size for this [Encoder]
-    pub fn max_datagram_size(&self) -> usize {
-        self.max_datagram_size
-    }
+    // /// Returns the maximum datagram size for this [Encoder]
+    // pub fn max_datagram_size(&self) -> usize {
+    //     self.max_datagram_size
+    // }
 
     /// Finishes the pending messages, returns `true` when there are completed datagrams.
     pub fn schedule(&mut self) -> bool {

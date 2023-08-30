@@ -27,6 +27,10 @@ pub mod reassembler;
 mod encoder;
 mod encoder_multi;
 
+/// UDP receiver task
+pub async fn udp_rx_task(_socket: Arc<UdpSocket>) {
+
+}
 
 /// UDP sender task
 pub async fn udp_tx_task(socket: Arc<UdpSocket>,
@@ -59,6 +63,7 @@ pub async fn udp_tx_task(socket: Arc<UdpSocket>,
             cmd = channel.recv() => {
                 match cmd {
                     None => {
+                        ct.cancel();
                         break
                     },
                     Some(cmd) => {
@@ -180,7 +185,7 @@ mod tests {
             chnnl_tx.send( EndpointCmd::Send {
                 transport: TransportBinding::Udp,
                 msg,
-                retention_time: Duration::from_millis(0),
+                retention_time: Duration::from_millis(5),
                 peer: daddr.clone()
             }).await.expect("Send on channel failed");
         }
@@ -200,8 +205,5 @@ mod tests {
         let _ = h1.await;
         let _ = h2.await;
     }
-
-
-
 }
 
