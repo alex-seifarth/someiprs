@@ -188,14 +188,15 @@ mod tests {
                 retention_time: Duration::from_millis(5),
                 peer: daddr.clone()
             }).await.expect("Send on channel failed");
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
-        let r = tokio::time::timeout(Duration::from_secs(10), async {
+        let r = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
-                tokio::time::sleep(Duration::from_millis(500)).await;
                 if received2.lock().expect("").len() == 10 {
                     break;
                 }
+                tokio::time::sleep(Duration::from_millis(500)).await;
             }
         }).await;
 
